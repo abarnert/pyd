@@ -34,7 +34,7 @@ def daemon():
                 try:
                     _ = result = eval(expr)
                 except Exception as e:
-                    w.write('{}: {}\n'.format(type(e), e))
+                    w.write('{}: {}\n'.format(type(e).__name__, e))
                 else:
                     w.write(str(result) + '\n')
                 finally:
