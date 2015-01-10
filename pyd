@@ -1,73 +1,48 @@
 #!/usr/bin/env python3
 
-import functools
+import collections
+import contextlib
 import os
-import socket
 import sys
+import daemon
 
-path = os.path.expanduser('~/.pyd.sock')
+try:
+    basestring
+except NameError:
+    basestring = (bytes, str)
 
-def daemon():
-    ssock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    ssock.bind(path)
-    ssock.listen(1)
-    pid = os.fork()
-    if pid:
-        print('Started daemon on {}'.format(pid))
-        ssock.close()
-        sock.connect(path)
-    else:
-        os.setsid()
-        try:
-            sock.close()
-            sys.stdin.close()
-            sys.stdout.close()
-            sys.stderr.close()
-            while True:
-                csock, addr = ssock.accept()
-                r, w = csock.makefile('r'), csock.makefile('w')
-                expr = r.readline()
-                if not expr:
-                    break
-                sys.stdin = r
-                sys.stdout = sys.stderr = w
-                try:
-                    _ = result = eval(expr)
-                except Exception as e:
-                    w.write('{}: {}\n'.format(type(e).__name__, e))
-                else:
-                    w.write(str(result) + '\n')
-                finally:
-                    sys.stdin = sys.stdout = sys.stderr = None
-                    r.close()
-                    w.close()
-                    csock.close()
-        finally:
-            os.unlink(path)
-            ssock.close()
-            os._exit(0)
+@contextlib.contextmanager
+def redirecting(stdin, stdout, stderr=None):
+    if stderr is None:
+        stderr = stdout
+    _stdin, _stdout, _stderr = sys.stdin, sys.stdout, sys.stderr
+    try:
+        sys.stdin, sys.stdout, sys.stderr = stdin, stdout, stderr
+        yield
+    finally:
+        sys.stdin, sys.stdout, sys.stderr = _stdin, _stdout, _stderr
 
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+class EvalDaemon(daemon.Daemon):
+    def initialize(self):
+        self.env = {'_' : ''}
+    def handle(self, cmd, rfile, wfile):
+        with redirecting(rfile, wfile):
+            try:
+                result = eval(cmd, self.env)
+                if result is not None:
+                    self.env['_'] = result
+            except Exception as e:
+                result = '{}: {}'.format(type(e).__name__, e)
+        wfile.write('{}\n'.format(result))
+
+d = EvalDaemon(os.path.expanduser('~/.pyd.sock'))
 
 if len(sys.argv) < 2:
-    try:
-        sock.connect(path)
-        sock.close()
+    if d.kill():
         print('Daemon killed')
-    except FileNotFoundError:
+    else:
         print('Daemon was not running')
     sys.exit(0)
 
-try:
-    sock.connect(path)
-except FileNotFoundError:
-    daemon()
-
-try:
-    sock.sendall(sys.argv[1].encode('utf-8') + b'\n')
-    for line in iter(input, ''):
-        sock.sendall(line.encode('utf-8') + b'\n')
-    response = sock.recv(4096).decode('utf-8')
-    sys.stdout.write(response)
-finally:
-    sock.close()
+for line in d.execute(sys.argv[1], sys.stdin):
+    sys.stdout.write(line)
